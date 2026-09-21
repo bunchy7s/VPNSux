@@ -24,10 +24,12 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QMessageBox>
 #include <QProcess>
-#include <QProgressDialog>
 #include <QSettings>
+#include <QThread>
 #include <QTimer>
 #include <algorithm>
 #include <memory>
@@ -95,15 +97,6 @@ void PrismExternalUpdater::checkForUpdates()
 
 void PrismExternalUpdater::checkForUpdates(bool triggeredByUser) const
 {
-    QProgressDialog progress(tr("Checking for updates..."), "", 0, 0, priv->parent);
-    progress.setMinimumDuration(0); // Appear immediately without waiting
-    progress.setCancelButton(nullptr);
-    progress.adjustSize();
-    if (triggeredByUser) {
-        progress.show();
-    }
-    QCoreApplication::processEvents();
-
     QProcess proc;
     auto exeName = QStringLiteral("%1_updater").arg(BuildConfig.LAUNCHER_APP_BINARY_NAME);
 #ifdef Q_OS_WIN32
@@ -123,14 +116,9 @@ void PrismExternalUpdater::checkForUpdates(bool triggeredByUser) const
 
     proc.start(priv->appDir.absoluteFilePath(exeName), args);
     if (auto resultStart = proc.waitForStarted(5000); !resultStart) {
-        auto err = proc.error();
-        qDebug() << "Failed to start updater after 5 seconds."
-                 << "reason:" << err << proc.errorString();
+        qWarning() << "Failed to check for updates." << proc.errorString();
         auto msgBox =
-            QMessageBox(QMessageBox::Information, tr("Update Check Failed"),
-                        tr("Failed to start after 5 seconds\nReason: %1.").arg(proc.errorString()), QMessageBox::Ok, priv->parent);
-        msgBox.setMinimumWidth(460);
-        msgBox.adjustSize();
+            QMessageBox(QMessageBox::Warning, tr("Update Check Failed"), tr("Failed to check for updates."), QMessageBox::Ok, priv->parent);
         msgBox.exec();
         priv->lastCheck = QDateTime::currentDateTime();
         priv->settings->setValue("last_check", priv->lastCheck.toString(Qt::ISODate));
@@ -138,20 +126,19 @@ void PrismExternalUpdater::checkForUpdates(bool triggeredByUser) const
         resetAutoCheckTimer();
         return;
     }
-    QCoreApplication::processEvents();
+    // pumpin the event loop, 20 second timeout
+    QElapsedTimer timer;
+    timer.start();
+    while (proc.state() != QProcess::NotRunning && timer.elapsed() < 20000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        QThread::msleep(10);
+    }
 
-    if (auto resultFinished = proc.waitForFinished(60000); !resultFinished) {
+    if (proc.state() != QProcess::NotRunning) {
         proc.kill();
-        auto err = proc.error();
-        auto output = proc.readAll();
-        qDebug() << "Updater failed to close after 60 seconds."
-                 << "reason:" << err << proc.errorString();
+        qWarning() << "update timeout, giving up.";
         auto msgBox =
-            QMessageBox(QMessageBox::Information, tr("Update Check Failed"),
-                        tr("Updater failed to close 60 seconds\nReason: %1.").arg(proc.errorString()), QMessageBox::Ok, priv->parent);
-        msgBox.setDetailedText(output);
-        msgBox.setMinimumWidth(460);
-        msgBox.adjustSize();
+            QMessageBox(QMessageBox::Warning, tr("Update Check Failed"), tr("Failed to check for updates."), QMessageBox::Ok, priv->parent);
         msgBox.exec();
         priv->lastCheck = QDateTime::currentDateTime();
         priv->settings->setValue("last_check", priv->lastCheck.toString(Qt::ISODate));
@@ -164,9 +151,6 @@ void PrismExternalUpdater::checkForUpdates(bool triggeredByUser) const
 
     auto stdOutput = proc.readAllStandardOutput();
     auto stdError = proc.readAllStandardError();
-
-    progress.cancel();
-    QCoreApplication::processEvents();
 
     switch (exitCode) {
         case 0:
@@ -183,12 +167,9 @@ void PrismExternalUpdater::checkForUpdates(bool triggeredByUser) const
         case 1:
             // there was an error
             {
-                qDebug() << "Updater subprocess error" << qPrintable(stdError);
-                auto msgBox = QMessageBox(QMessageBox::Warning, tr("Update Check Error"),
-                                          tr("There was an error running the update check."), QMessageBox::Ok, priv->parent);
-                msgBox.setDetailedText(QString(stdError));
-                msgBox.setMinimumWidth(460);
-                msgBox.adjustSize();
+                qWarning() << "Failed to check for updates." << qPrintable(stdError);
+                auto msgBox = QMessageBox(QMessageBox::Warning, tr("Update Check Failed"), tr("Failed to check for updates."),
+                                          QMessageBox::Ok, priv->parent);
                 msgBox.exec();
             }
             break;

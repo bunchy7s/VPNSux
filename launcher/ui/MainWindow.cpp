@@ -1358,11 +1358,22 @@ void MainWindow::refreshInstances()
 
 void MainWindow::checkForUpdates()
 {
-    if (APPLICATION->updaterEnabled()) {
-        APPLICATION->triggerUpdateCheck();
-    } else {
+    if (!APPLICATION->updaterEnabled()) {
         qWarning() << "Updater not set up. Cannot check for updates.";
+        return;
     }
+
+    // fancy button animation so that people know things are happening
+    auto action = ui->actionCheckUpdate;
+    auto oldText = action->text();
+    int dots = 0;
+    QTimer timer;
+    connect(&timer, &QTimer::timeout, action, [action, &dots] { action->setText(tr("Checking%1").arg(QString(++dots % 4, '.'))); });
+    timer.start(300);
+    action->setEnabled(false);
+    APPLICATION->triggerUpdateCheck();
+    action->setText(oldText);
+    action->setEnabled(APPLICATION->updatesAreAllowed());
 }
 
 void MainWindow::on_actionSettings_triggered()
